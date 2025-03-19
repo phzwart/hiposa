@@ -9,7 +9,7 @@ class PoissonTiler:
     Creates hierarchical Poisson disc sampling patterns that can be tiled across a large area.
     Supports arbitrary dimensions, defaulting to 2D.
     """
-    def __init__(self, tile_size, spacings, dimensions=2):
+    def __init__(self, tile_size, spacings, dimensions=2, min_tile_factor=2.0):
         """
         Initialize the tiler with tile size and spacing levels.
         
@@ -22,7 +22,7 @@ class PoissonTiler:
         
         # Ensure tile size is large enough compared to largest spacing
         # For periodic tiling to work, tile size should be at least 4x the largest spacing
-        min_tile_size = 4.0 * self.spacings[0]
+        min_tile_size = min_tile_factor * self.spacings[0]
         self.tile_size = max(tile_size, min_tile_size)
         
         self.dimensions = dimensions
@@ -90,8 +90,14 @@ class PoissonTiler:
         
         return tile_points[mask], self.tile_labels[mask]
 
-    def get_points_in_region(self, region, n_processes=None):
-        """Get all points and their levels within a specified region using parallel processing."""
+    def get_points_in_region(self, region, n_processes=None, add_corners=True):
+        """Get all points and their levels within a specified region using parallel processing.
+        
+        Args:
+            region: List of tuples defining the region bounds for each dimension
+            n_processes: Number of processes to use for parallel processing
+            add_corners: Whether to add corner points to the result (default: True)
+        """
         # Extract bounds and calculate tiles needed
         bounds = [b for dim in region for b in dim]
         n_tiles = [int(np.ceil((bounds[i+1] - bounds[i]) / self.tile_size)) 
@@ -113,5 +119,26 @@ class PoissonTiler:
                      if results else np.array([])
         all_labels = np.concatenate([labels for _, labels in results if len(labels) > 0], axis=0) \
                      if results else np.array([])
+        
+        if add_corners:
+            # Add corner points
+            corner_indices = list(itertools.product(*[[0, 1]] * self.dimensions))
+            corner_points = []
+            for indices in corner_indices:
+                point = []
+                for dim in range(self.dimensions):
+                    point.append(bounds[2*dim] if indices[dim] == 0 else bounds[2*dim + 1])
+                corner_points.append(point)
+            
+            corner_points = np.array(corner_points)
+            corner_labels = np.zeros(len(corner_points), dtype=np.int32)  # Level 0 for corners
+            
+            # Combine with existing points
+            if len(all_points) > 0:
+                all_points = np.vstack((all_points, corner_points))
+                all_labels = np.concatenate((all_labels, corner_labels))
+            else:
+                all_points = corner_points
+                all_labels = corner_labels
         
         return all_points, all_labels
