@@ -250,10 +250,7 @@ class PointSelector:
         masker[self.border:-self.border, self.border:-self.border] = False
         grid_values[masker]=np.nan
         isnan = np.isnan(grid_values)
-        plt.imshow(grid_values)
-        plt.show()
-        print(masker.shape)
-
+        
         # Calculate percentiles
         percentile_work_obs = np.percentile(work_f_values, self.tau)
         percentile_work = np.percentile(grid_values[~isnan], self.tau)
@@ -375,11 +372,11 @@ class PointSelector:
                 fontsize=10, verticalalignment='top', bbox=props)
         
         # Plot existing points
-        plt.scatter(these_xy[:, 0], these_xy[:, 1], marker="+", c="black", s=3)
+        plt.scatter(these_xy[:, 1], these_xy[:, 0], marker="+", c="black", s=3)
         
         # Plot new points if any
         if new_ones is not None and new_ones.shape[0] > 0:
-            plt.scatter(new_ones[:, 0], new_ones[:, 1], marker="+", c="red", s=3)
+            plt.scatter(new_ones[:, 1], new_ones[:, 0], marker="+", c="red", s=3)
         
         # Plot threshold mask
         plt.imshow(mask, alpha=0.250, origin="lower", 

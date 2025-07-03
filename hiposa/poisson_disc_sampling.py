@@ -307,6 +307,7 @@ class PoissonDiskSamplerWithExisting(object):
         update_frequency = 10
         points_since_update = 0
         
+        # First pass with original k
         while active_list:
             i = np.random.choice(active_list)
             current_point = self.samples[i]
@@ -341,6 +342,51 @@ class PoissonDiskSamplerWithExisting(object):
             if points_since_update >= update_frequency:
                 self.kdtree = KDTree(np.array(self.samples))
                 points_since_update = 0
+
+        # Second pass with increased k
+        original_k = self.k
+        self.k = 80  # Increase k for second pass
+        
+        # Reset active list for second pass
+        active_list = list(range(len(self.samples)))
+        
+        while active_list:
+            i = np.random.choice(active_list)
+            current_point = self.samples[i]
+            generated_points = self.generate_points_around(current_point)
+
+            valid_found = False
+            for point in generated_points:
+                # Apply symmetry and check if orbit is valid
+                symmetric_points = self.apply_symmetry(point)
+                if symmetric_points is not None:
+                    # Check if all points in the orbit are valid with existing points
+                    all_valid = all(self.is_valid_point(p) for p in symmetric_points)
+                    
+                    if all_valid:
+                        # Add all points from the valid orbit
+                        for sym_point in symmetric_points:
+                            self.samples.append(sym_point)
+                            new_index = len(self.samples) - 1
+                            self.idx_to_point[new_index] = sym_point
+                            label = new_label if new_label is not None else "new"
+                            self.labels = np.append(self.labels, label)
+                            active_list.append(new_index)
+                            new_points.append(sym_point)
+                            new_labels.append(label)
+                        valid_found = True
+                        break
+
+            if not valid_found:
+                active_list.remove(i)
+
+            points_since_update += 1
+            if points_since_update >= update_frequency:
+                self.kdtree = KDTree(np.array(self.samples))
+                points_since_update = 0
+
+        # Restore original k
+        self.k = original_k
 
         if return_new_only:
             return np.array(new_points), np.array(new_labels)
