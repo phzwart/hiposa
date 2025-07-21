@@ -3,20 +3,22 @@ from .poisson_disc_sampling import PoissonDiskSamplerWithExisting
 from multiprocessing import Pool
 from functools import partial
 import itertools
+from typing import List, Tuple, Optional, Union, Any
 
 class PoissonTiler:
     """
     Creates hierarchical Poisson disc sampling patterns that can be tiled across a large area.
     Supports arbitrary dimensions, defaulting to 2D.
     """
-    def __init__(self, tile_size, spacings, dimensions=2, min_tile_factor=2.0):
+    def __init__(self, tile_size: float, spacings: List[float], dimensions: int = 2, min_tile_factor: float = 2.0) -> None:
         """
         Initialize the tiler with tile size and spacing levels.
         
         Args:
-            tile_size (float): Size of the square tile
-            spacings (list): List of inter-point distances, from largest to smallest
-            dimensions (int): Number of dimensions for the tiling (default: 2)
+            tile_size: Size of the square tile.
+            spacings: List of inter-point distances, from largest to smallest.
+            dimensions: Number of dimensions for the tiling (default: 2).
+            min_tile_factor: Minimum factor for tile size relative to largest spacing.
         """
         self.spacings = sorted(spacings, reverse=True)  # Ensure largest spacing first
         
@@ -40,7 +42,7 @@ class PoissonTiler:
         # Generate the base tile
         self._generate_base_tile()
 
-    def _generate_base_tile(self):
+    def _generate_base_tile(self) -> None:
         """Generate hierarchical sampling within a single periodic tile."""
         print("\nGenerating base tile...")
         points = None
@@ -73,8 +75,16 @@ class PoissonTiler:
         self.tile_labels = labels.astype(np.int32)  # Ensure all labels are integers
         print(f"\nBase tile complete with {len(points)} total points")
 
-    def _process_tile(self, args):
-        """Process a single tile - used for parallel processing."""
+    def _process_tile(self, args: Tuple) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Process a single tile - used for parallel processing.
+        
+        Args:
+            args: Tuple containing tile indices and bounds.
+            
+        Returns:
+            Tuple of (points, labels) for the processed tile.
+        """
         indices = args[:self.dimensions]
         bounds = args[self.dimensions:]
         
@@ -90,13 +100,17 @@ class PoissonTiler:
         
         return tile_points[mask], self.tile_labels[mask]
 
-    def get_points_in_region(self, region, n_processes=None, add_corners=True):
-        """Get all points and their levels within a specified region using parallel processing.
+    def get_points_in_region(self, region: List[Tuple[float, float]], n_processes: Optional[int] = None, add_corners: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get all points and their levels within a specified region using parallel processing.
         
         Args:
-            region: List of tuples defining the region bounds for each dimension
-            n_processes: Number of processes to use for parallel processing
-            add_corners: Whether to add corner points to the result (default: True)
+            region: List of tuples defining the region bounds for each dimension.
+            n_processes: Number of processes to use for parallel processing.
+            add_corners: Whether to add corner points to the result (default: True).
+            
+        Returns:
+            Tuple of (points, labels) arrays for the specified region.
         """
         # Extract bounds and calculate tiles needed
         bounds = [b for dim in region for b in dim]

@@ -1,88 +1,64 @@
-.PHONY: clean clean-test clean-pyc clean-build docs help
-.DEFAULT_GOAL := help
+.PHONY: help install install-dev test lint format clean docs build publish
 
-define BROWSER_PYSCRIPT
-import os, webbrowser, sys
+help: ## Show this help message
+	@echo "HiPoSa - Hierarchical Poisson Sampling"
+	@echo "======================================"
+	@echo ""
+	@echo "Available commands:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-try:
-	from urllib import pathname2url
-except:
-	from urllib.request import pathname2url
+install: ## Install the package in development mode
+	pip install -e .
 
-webbrowser.open("file://" + pathname2url(os.path.abspath(sys.argv[1])))
-endef
-export BROWSER_PYSCRIPT
+install-dev: ## Install the package with development dependencies
+	pip install -e ".[dev]"
 
-define PRINT_HELP_PYSCRIPT
-import re, sys
+test: ## Run the test suite
+	pytest tests/ -v --cov=hiposa --cov-report=term-missing
 
-for line in sys.stdin:
-	match = re.match(r'^([a-zA-Z_-]+):.*?## (.*)$$', line)
-	if match:
-		target, help = match.groups()
-		print("%-20s %s" % (target, help))
-endef
-export PRINT_HELP_PYSCRIPT
+test-fast: ## Run tests without coverage
+	pytest tests/ -v
 
-BROWSER := python -c "$$BROWSER_PYSCRIPT"
+lint: ## Run linting checks
+	flake8 hiposa/ tests/ --max-line-length=88 --extend-ignore=E203,W503
+	mypy hiposa/ --ignore-missing-imports
 
-help:
-	@python -c "$$PRINT_HELP_PYSCRIPT" < $(MAKEFILE_LIST)
+format: ## Format code with black and isort
+	black hiposa/ tests/ examples/
+	isort hiposa/ tests/ examples/
 
-clean: clean-build clean-pyc clean-test ## remove all build, test, coverage and Python artifacts
+check-format: ## Check if code is properly formatted
+	black --check hiposa/ tests/ examples/
+	isort --check-only hiposa/ tests/ examples/
 
-clean-build: ## remove build artifacts
-	rm -fr build/
-	rm -fr dist/
-	rm -fr .eggs/
-	find . \( -path ./env -o -path ./venv -o -path ./.env -o -path ./.venv \) -prune -o -name '*.egg-info' -exec rm -fr {} +
-	find . \( -path ./env -o -path ./venv -o -path ./.env -o -path ./.venv \) -prune -o -name '*.egg' -exec rm -f {} +
+clean: ## Clean up build artifacts
+	rm -rf build/
+	rm -rf dist/
+	rm -rf *.egg-info/
+	rm -rf .pytest_cache/
+	rm -rf .coverage
+	rm -rf htmlcov/
+	find . -type f -name "*.pyc" -delete
+	find . -type d -name "__pycache__" -delete
 
-clean-pyc: ## remove Python file artifacts
-	find . -name '*.pyc' -exec rm -f {} +
-	find . -name '*.pyo' -exec rm -f {} +
-	find . -name '*~' -exec rm -f {} +
-	find . -name '__pycache__' -exec rm -fr {} +
+docs: ## Build documentation
+	cd docs && make html
 
-clean-test: ## remove test and coverage artifacts
-	rm -fr .tox/
-	rm -f .coverage
-	rm -fr htmlcov/
-	rm -fr .pytest_cache
+build: ## Build the package
+	python -m build
 
-lint: ## check style with flake8
-	flake8 hiposa tests
-
-test: ## run tests quickly with the default Python
-	py.test
-
-test-all: ## run tests on every Python version with tox
-	tox
-
-coverage: ## check code coverage quickly with the default Python
-	coverage run --source hiposa -m pytest
-	coverage report -m
-	coverage html
-	$(BROWSER) htmlcov/index.html
-
-docs: ## generate Sphinx HTML documentation, including API docs
-	rm -f docs/hiposa.rst
-	rm -f docs/modules.rst
-	sphinx-apidoc -o docs/ hiposa
-	$(MAKE) -C docs clean
-	$(MAKE) -C docs html
-	$(BROWSER) docs/_build/html/index.html
-
-servedocs: docs ## compile the docs watching for changes
-	watchmedo shell-command -p '*.rst' -c '$(MAKE) -C docs html' -R -D .
-
-release: dist ## package and upload a release
+publish: ## Publish to PyPI (requires twine)
 	twine upload dist/*
 
-dist: clean ## builds source and wheel package
-	python setup.py sdist
-	python setup.py bdist_wheel
-	ls -l dist
+example: ## Run the basic usage example
+	python examples/basic_usage.py
 
-install: clean ## install the package to the active Python's site-packages
-	python setup.py install
+pre-commit: ## Install pre-commit hooks
+	pre-commit install
+
+pre-commit-run: ## Run pre-commit on all files
+	pre-commit run --all-files
+
+setup-dev: install-dev pre-commit ## Setup development environment
+	@echo "Development environment setup complete!"
+	@echo "Run 'make test' to verify installation"

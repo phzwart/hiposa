@@ -1,38 +1,80 @@
 import numpy as np
 from scipy.spatial import KDTree
 from scipy.optimize import minimize
+from typing import List, Tuple, Optional, Callable, Union, Any
+import numpy.typing as npt
+import numbers
 
-class PoissonDiskSamplerWithExisting(object):
+# Optional config integration
+try:
+    from .config import SAMPLING_CONFIG
+    USE_CONFIG = True
+except ImportError:
+    USE_CONFIG = False
+
+class PoissonDiskSamplerWithExisting:
     """
     A class to generate samples using Poisson Disk Sampling within a specified domain,
     constrained by an existing set of points.
 
+    This class implements the Poisson disk sampling algorithm with support for:
+    - Multi-dimensional spaces (2D, 3D, 4D, etc.)
+    - Symmetry operations (rotational, translational, etc.)
+    - Periodic boundary conditions for tiling
+    - Hierarchical sampling with existing point constraints
+
     Attributes:
-        domain (list of tuples): Boundaries for each dimension in the domain.
+        domain (np.ndarray): Boundaries for each dimension in the domain.
         r (float): Minimum distance between samples.
         k (int): Maximum number of attempts to generate a new sample around each existing sample.
-        existing_points (ndarray): Array of points that already exist in the domain and must be respected.
-        existing_labels (ndarray): Array of labels corresponding to existing points.
+        existing_points (Optional[np.ndarray]): Array of points that already exist in the domain.
+        existing_labels (Optional[np.ndarray]): Array of labels corresponding to existing points.
         wrap (bool): Whether to use wrap-around edges for tiling.
+        symmetry_operators (List[Callable]): List of symmetry operations to apply.
+        dimensions (int): Number of dimensions in the domain.
+        cell_size (float): Cell size for grid-based optimization.
+        samples (List[np.ndarray]): List of generated sample points.
+        labels (np.ndarray): Array of labels for all points.
+        kdtree (Optional[KDTree]): KDTree for efficient nearest neighbor searches.
     """
 
-    def __init__(self, domain, r, existing_points=None, existing_labels=None,
-                 k=60, symmetry_operators=None, wrap=False):
+    def __init__(self, 
+                 domain: List[Tuple[float, float]], 
+                 r: float, 
+                 existing_points: Optional[np.ndarray] = None, 
+                 existing_labels: Optional[np.ndarray] = None,
+                 k: Optional[int] = None, 
+                 symmetry_operators: Optional[List[Callable]] = None, 
+                 wrap: bool = False) -> None:
         """
-        Initializes the PoissonDiskSamplerWithExisting with the given domain, minimum distance, and optional parameters.
+        Initialize the PoissonDiskSamplerWithExisting.
 
         Args:
-            domain (list of tuples): Boundaries for each dimension in the domain, as (min, max) pairs.
-            r (float): Minimum distance between samples.
-            existing_points (ndarray, optional): Array of pre-existing points. Defaults to None.
-            existing_labels (ndarray, optional): Array of labels for pre-existing points. Defaults to None.
-            k (int, optional): Maximum number of attempts to generate a new sample. Defaults to 60.
-            symmetry_operators (list of callables, optional): List of symmetry operations to apply to the points. Each operator is a function that takes a point and returns a transformed point.
-            wrap (bool, optional): Whether to use wrap-around edges for tiling. Defaults to False.
+            domain: List of (min, max) tuples defining boundaries for each dimension.
+            r: Minimum distance between samples.
+            existing_points: Array of pre-existing points to respect.
+            existing_labels: Array of labels for pre-existing points.
+            k: Maximum number of attempts to generate a new sample.
+            symmetry_operators: List of symmetry operations to apply to points.
+            wrap: Whether to use wrap-around edges for tiling.
+
+        Raises:
+            ValueError: If domain is empty or r is non-positive.
         """
+        if not domain:
+            raise ValueError("Domain cannot be empty")
+        if r <= 0:
+            raise ValueError("Minimum distance r must be positive")
+            
         self.domain = np.array(domain)
         self.r = r
-        self.k = k
+        
+        # Use config default for k if not provided
+        if USE_CONFIG and k is None:
+            self.k = SAMPLING_CONFIG.DEFAULT_K
+        else:
+            self.k = k if k is not None else 60
+        
         self.dimensions = len(domain)
         self.cell_size = r / np.sqrt(self.dimensions)
         self.existing_points = existing_points
@@ -51,16 +93,22 @@ class PoissonDiskSamplerWithExisting(object):
             self.kdtree = None
             self.labels = np.array([])
 
-    def generate_points_around(self, point):
+    def generate_points_around(self, point: np.ndarray) -> np.ndarray:
         """
-        Generates potential points around a given sample within the allowed radius.
+        Generate potential points around a given sample within the allowed radius.
 
         Args:
-            point (array-like): The point around which to generate new points.
+            point: The point around which to generate new points.
 
         Returns:
-            ndarray: Array of new points around the given point.
+            Array of new points around the given point.
+
+        Raises:
+            ValueError: If point is not in the correct dimension.
         """
+        if len(point) != self.dimensions:
+            raise ValueError(f"Point dimension {len(point)} does not match domain dimension {self.dimensions}")
+            
         radius = np.sqrt(
             np.random.uniform(self.r ** 2, (2 * self.r) ** 2, self.k))
         directions = np.random.normal(0, 1, (self.k, self.dimensions))
@@ -74,11 +122,18 @@ class PoissonDiskSamplerWithExisting(object):
                 new_points[:, dim] = (new_points[:, dim] - min_bound) % (
                             max_bound - min_bound) + min_bound
 
-        #print(f"Generated {len(new_points)} potential points")
         return new_points
 
-    def is_valid_point(self, point):
-        """Optimized version of point validation."""
+    def is_valid_point(self, point: np.ndarray) -> bool:
+        """
+        Optimized version of point validation.
+        
+        Args:
+            point: The point to validate.
+            
+        Returns:
+            True if the point is valid, False otherwise.
+        """
         # Check domain bounds
         if np.any(point < self.domain[:, 0]) or np.any(point >= self.domain[:, 1]):
             return False
@@ -103,17 +158,17 @@ class PoissonDiskSamplerWithExisting(object):
         # Check if any point is too close
         return not np.any(distances < self.r)
 
-    def check_orbit_validity(self, orbit, epsilon=1e-10):
+    def check_orbit_validity(self, orbit: List[np.ndarray], epsilon: float = 1e-10) -> bool:
         """
         Check if all points in an orbit maintain proper distance relationships.
         Points must either be very close (< epsilon) or far enough apart (>= r).
         
         Args:
-            orbit (list): List of points in the orbit
-            epsilon (float): Threshold for considering points identical
+            orbit: List of points in the orbit.
+            epsilon: Threshold for considering points identical.
             
         Returns:
-            bool: True if the orbit is valid, False otherwise
+            True if the orbit is valid, False otherwise.
         """
         for i in range(len(orbit)):
             for j in range(i + 1, len(orbit)):
@@ -131,17 +186,17 @@ class PoissonDiskSamplerWithExisting(object):
                     return False
         return True
 
-    def apply_symmetry(self, point):
+    def apply_symmetry(self, point: np.ndarray) -> Optional[List[np.ndarray]]:
         """
         Applies all symmetry operations to a point and returns the complete orbit.
         Only returns the orbit if all points in it maintain proper distance relationships.
 
         Args:
-            point (array-like): The point to which symmetry operations are applied.
+            point: The point to which symmetry operations are applied.
 
         Returns:
-            list: A list of points in the complete orbit under the symmetry operators,
-                 or None if the orbit is invalid.
+            A list of points in the complete orbit under the symmetry operators,
+            or None if the orbit is invalid.
         """
         symmetric_points = [np.array(point)]
         epsilon = 1e-10  # Threshold for considering points identical
@@ -182,22 +237,22 @@ class PoissonDiskSamplerWithExisting(object):
             return symmetric_points
         return None
 
-    def find_invariant_points(self, operator):
+    def find_invariant_points(self, operator: Callable) -> List[np.ndarray]:
         """
         Find points that are invariant (fixed points) under a symmetry operator
         using Nelder-Mead optimization to minimize the distance between a point
         and its transform.
         
         Args:
-            operator: The symmetry operator function
+            operator: The symmetry operator function.
             
         Returns:
-            list: List of invariant points found within the domain
+            List of invariant points found within the domain.
         """
         epsilon = 1e-10
         
-        def objective(point):
-            """Distance between point and its transform"""
+        def objective(point: np.ndarray) -> float:
+            """Distance between point and its transform."""
             point = np.array(point)
             transformed = operator(point)
             if transformed is None:
@@ -259,7 +314,7 @@ class PoissonDiskSamplerWithExisting(object):
         
         return invariant_points
 
-    def sample(self, new_label=None, return_new_only=False):
+    def sample(self, new_label: Optional[Union[int, str]] = None, return_new_only: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Generates a sample of points using the Poisson Disk Sampling method.
         Now includes invariant points under symmetry operators.
@@ -267,7 +322,21 @@ class PoissonDiskSamplerWithExisting(object):
         if new_label is None:
             new_label = 0
             if len(self.labels) > 0:
-                new_label = int(np.max(self.labels) + 1)
+                # Debug: print type and contents of self.labels
+                print('DEBUG: self.labels type:', type(self.labels), 'contents:', self.labels)
+                try:
+                    numeric_labels = []
+                    for label in self.labels:
+                        if isinstance(label, numbers.Number):
+                            numeric_labels.append(int(label))
+                        elif isinstance(label, str) and label.isdigit():
+                            numeric_labels.append(int(label))
+                        else:
+                            numeric_labels.append(0)
+                    new_label = max(numeric_labels) + 1
+                except (ValueError, TypeError):
+                    new_label = len(self.labels)
+            print('DEBUG: Computed new_label =', new_label)
 
         if not self.samples:
             # First try to add invariant points
@@ -388,6 +457,8 @@ class PoissonDiskSamplerWithExisting(object):
         # Restore original k
         self.k = original_k
 
+        # After all label assignments, print the labels array for debugging
+        print('DEBUG: Final labels array =', self.labels)
         if return_new_only:
             return np.array(new_points), np.array(new_labels)
         else:

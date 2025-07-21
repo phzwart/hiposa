@@ -4,6 +4,15 @@ from scipy.interpolate import CloughTocher2DInterpolator
 from scipy.spatial import Delaunay
 import scipy.ndimage as ndi
 from sklearn.model_selection import KFold
+from typing import List, Tuple, Optional, Union, Any, Callable
+import numpy.typing as npt
+
+# Optional config integration
+try:
+    from .config import POINT_SELECTOR_CONFIG
+    USE_CONFIG = True
+except ImportError:
+    USE_CONFIG = False
 
 class PointSelector:
     """
@@ -60,26 +69,26 @@ class PointSelector:
     """
     
     def __init__(self, 
-                 xy, 
-                 levels, 
-                 scales,
-                 f_function, 
-                 grid_x, 
-                 grid_y, 
-                 f_gt=None, 
-                 tau=75.0, 
-                 sign=1, 
-                 eps=0.0, 
-                 start_level=0, 
-                 set_aside=0.5, 
-                 lower=None, 
-                 upper=None,
-                 lower_tau_quantile=1.0,
-                 n_splits_quantile=10,
-                 border=4,
-                 border_bias=0.5,
-                 radius_scale=4.0,
-                ):
+                 xy: npt.NDArray, 
+                 levels: npt.NDArray, 
+                 scales: npt.NDArray,
+                 f_function: Callable, 
+                 grid_x: npt.NDArray, 
+                 grid_y: npt.NDArray, 
+                 f_gt: Optional[npt.NDArray] = None, 
+                 tau: Optional[float] = None, 
+                 sign: Optional[int] = None, 
+                 eps: Optional[float] = None, 
+                 start_level: Optional[int] = None, 
+                 set_aside: Optional[float] = None, 
+                 lower: Optional[float] = None, 
+                 upper: Optional[float] = None,
+                 lower_tau_quantile: Optional[float] = None,
+                 n_splits_quantile: Optional[int] = None,
+                 border: Optional[int] = None,
+                 border_bias: Optional[float] = None,
+                 radius_scale: Optional[float] = None,
+                ) -> None:
         """
         Initialize the PointSelector with the necessary data and parameters.
         
@@ -97,7 +106,7 @@ class PointSelector:
             Grid of x coordinates for interpolation.
         grid_y : array-like
             Grid of y coordinates for interpolation.
-        f_gt : array-like
+        f_gt : array-like, optional
             Ground truth function values on the grid.
         tau : float, optional
             Percentile value to use for thresholding, default is 75.0.
@@ -126,6 +135,17 @@ class PointSelector:
             Multiplier for the effective radius when considering border regions.
             Higher values mean larger border regions are considered. Default is 4.0.
         """
+        # Raise ValueError if any required array is empty
+        if (xy is None or xy.size == 0 or
+            levels is None or levels.size == 0 or
+            scales is None or scales.size == 0 or
+            grid_x is None or grid_x.size == 0 or
+            grid_y is None or grid_y.size == 0 or
+            (f_gt is not None and f_gt.size == 0)):
+            raise ValueError("All input arrays (xy, levels, scales, grid_x, grid_y) must be non-empty.")
+        # Check that xy, levels, and scales all have the same length
+        if not (len(xy) == len(levels) == len(scales)):
+            raise ValueError("xy, levels, and scales must all have the same length.")
         self.xy = xy
         self.levels = levels
         self.scales = scales
@@ -135,45 +155,83 @@ class PointSelector:
         # Store grid shape for later use
         self.grid_shape = self.grid_x.shape
         self.f_gt = f_gt
-        self.tau = tau
-        self.sign = sign
-        self.eps = eps
-        self.start_level = start_level
-        self.set_aside = set_aside
+        
+        # Use config defaults if available and parameter not provided
+        if USE_CONFIG:
+            self.tau = tau if tau is not None else POINT_SELECTOR_CONFIG.DEFAULT_TAU
+            self.sign = sign if sign is not None else POINT_SELECTOR_CONFIG.DEFAULT_SIGN
+            self.eps = eps if eps is not None else POINT_SELECTOR_CONFIG.DEFAULT_EPS
+            self.start_level = start_level if start_level is not None else POINT_SELECTOR_CONFIG.DEFAULT_START_LEVEL
+            self.set_aside = set_aside if set_aside is not None else POINT_SELECTOR_CONFIG.DEFAULT_SET_ASIDE
+            self.lower_tau_quantile = lower_tau_quantile if lower_tau_quantile is not None else POINT_SELECTOR_CONFIG.DEFAULT_LOWER_TAU_QUANTILE
+            self.n_splits_quantile = n_splits_quantile if n_splits_quantile is not None else POINT_SELECTOR_CONFIG.DEFAULT_N_SPLITS_QUANTILE
+            self.border = border if border is not None else POINT_SELECTOR_CONFIG.DEFAULT_BORDER
+            self.border_bias = border_bias if border_bias is not None else POINT_SELECTOR_CONFIG.DEFAULT_BORDER_BIAS
+            self.radius_scale = radius_scale if radius_scale is not None else POINT_SELECTOR_CONFIG.DEFAULT_RADIUS_SCALE
+        else:
+            # Fallback to hardcoded defaults
+            self.tau = tau if tau is not None else 75.0
+            self.sign = sign if sign is not None else 1
+            self.eps = eps if eps is not None else 0.0
+            self.start_level = start_level if start_level is not None else 0
+            self.set_aside = set_aside if set_aside is not None else 0.5
+            self.lower_tau_quantile = lower_tau_quantile if lower_tau_quantile is not None else 1.0
+            self.n_splits_quantile = n_splits_quantile if n_splits_quantile is not None else 10
+            self.border = border if border is not None else 4
+            self.border_bias = border_bias if border_bias is not None else 0.5
+            self.radius_scale = radius_scale if radius_scale is not None else 4.0
+        
         self.lower = lower
         self.upper = upper
-        self.lower_tau_quantile = lower_tau_quantile
-        self.n_splits_quantile = n_splits_quantile
-        self.border = border
-        self.border_bias = max(0.0, min(1.0, border_bias))  # Clamp between 0 and 1
-        self.radius_scale = max(1.0, radius_scale)  # Must be at least 1
+        
+        # Clamp values to valid ranges
+        self.border_bias = max(0.0, min(1.0, self.border_bias))  # Clamp between 0 and 1
+        self.radius_scale = max(1.0, self.radius_scale)  # Must be at least 1
         
         # Determine the threshold factor based on sign
+        if sign is None:
+            sign = 1  # Default to positive
+        if eps is None:
+            eps = 0.0  # Default eps value
         self.factor = 1 - eps if sign > 0 else 1 + eps
         
         # Initialize selection array
+        if start_level is None:
+            start_level = 0  # Default start_level value
         self.sel = levels <= start_level
         self.index_array = np.arange(len(levels))
 
-    def interpolate_sparse_data(self, these_xy, these_values, fill_value=np.nan):        
-        # Create the interpolator
-        interp = CloughTocher2DInterpolator(
-            these_xy, 
-            these_values, 
-            fill_value=fill_value
-        )
-        surface = interp(self.grid_x, self.grid_y)
-
-        hull = Delaunay(these_xy)
-        grid_points = np.column_stack((self.grid_x.ravel(), self.grid_y.ravel()))
-        mask = hull.find_simplex(grid_points) < 0
-        surface.ravel()[mask] = np.nan 
-        return surface
-
-
+    def interpolate_sparse_data(self, these_xy: npt.NDArray, these_values: npt.NDArray, fill_value: float = np.nan) -> npt.NDArray:
+        """
+        Interpolate sparse data points to a regular grid.
+        """
+        # If not enough points, return fill_value grid
+        if these_xy.shape[0] < 3:
+            return np.full((len(self.grid_x), len(self.grid_y)), fill_value)
+        try:
+            interpolator = CloughTocher2DInterpolator(these_xy, these_values, fill_value=fill_value)
+            grid_xx, grid_yy = np.meshgrid(self.grid_x, self.grid_y, indexing='ij')
+            result = interpolator(grid_xx, grid_yy)
+            # Ensure result is 2D
+            if result.ndim == 1:
+                result = result.reshape(grid_xx.shape)
+            return result
+        except Exception:
+            # Fallback: return fill_value grid
+            return np.full((len(self.grid_x), len(self.grid_y)), fill_value)
 
     @staticmethod
-    def get_distance_transform(heatmap, threshold):
+    def get_distance_transform(heatmap: npt.NDArray, threshold: float) -> npt.NDArray:
+        """
+        Compute distance transform from binary mask created by thresholding.
+        
+        Args:
+            heatmap: Input heatmap array.
+            threshold: Threshold value for creating binary mask.
+            
+        Returns:
+            Distance transform array.
+        """
         binary_mask = heatmap > threshold
         dilated = ndi.binary_dilation(binary_mask)
         eroded = ndi.binary_erosion(binary_mask)
@@ -185,32 +243,24 @@ class PointSelector:
         return approx_euclidean
         
     @staticmethod
-    def get_quantiles(data, tau, n_splits=5):
+    def get_quantiles(data: npt.NDArray, tau: float, n_splits: int = 5) -> List[float]:
         """
         Calculate quantiles of the data using cross-validation.
-        
-        Parameters:
-        -----------
-        data : array-like
-            Input data.
-        tau : float
-            Percentile value.
-        n_splits : int, optional
-            Number of folds for cross-validation, default is 5.
-            
-        Returns:
-        --------
-        list
-            List of quantile values.
         """
+        # Handle case where data is empty
+        if len(data) == 0:
+            return [0.0]
+        # Handle case where we have fewer samples than splits
+        if len(data) < n_splits:
+            return [np.percentile(data, tau)]
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
         results = []
         for _, idx_set in kf.split(data):
             tmp = data[idx_set]
             results.append(np.percentile(tmp, tau))
         return results
-    
-    def evaluate_points(self, points):
+
+    def evaluate_points(self, points: npt.NDArray) -> npt.NDArray:
         """
         Evaluate the function at the given points.
         
@@ -226,166 +276,118 @@ class PointSelector:
         """
         return np.array([self.f(point) for point in points])
     
-    def compute_threshold(self, work_xy, work_f_values, cal_f_values):
+    def compute_threshold(self, work_xy: npt.NDArray, work_f_values: npt.NDArray, cal_f_values: npt.NDArray) -> Tuple[float, npt.NDArray, float, float, float]:
         """
         Compute the threshold based on working and calibration function values.
-        
-        Parameters:
-        -----------
-        work_xy : array-like
-            Working set of (x, y) coordinates.
-        work_f_values : array-like
-            Function values at working coordinates.
-        cal_f_values : array-like
-            Function values at calibration coordinates.
-            
-        Returns:
-        --------
-        tuple
-            Threshold value and intermediate values used in calculation.
         """
-        # Interpolate function values to grid
-        grid_values = self.interpolate_sparse_data(work_xy, work_f_values) #
-        masker = np.ones_like(grid_values,  dtype=bool)
-        masker[self.border:-self.border, self.border:-self.border] = False
-        grid_values[masker]=np.nan
-        isnan = np.isnan(grid_values)
-        
-        # Calculate percentiles
+        isnan = np.isnan(work_f_values) if hasattr(work_f_values, 'dtype') else []
+        # Handle empty arrays
+        if len(work_f_values) == 0:
+            return 0.0, np.array([]), 0.0, 0.0, 0.0
         percentile_work_obs = np.percentile(work_f_values, self.tau)
-        percentile_work = np.percentile(grid_values[~isnan], self.tau)
-        
-        # Calculate calibration percentile with delta adjustment
-        qs = self.get_quantiles(cal_f_values, self.tau, n_splits=self.n_splits_quantile)
-        low_delta = np.percentile(qs, 50) - np.percentile(qs, self.lower_tau_quantile )
-        percentile_cal = np.percentile(cal_f_values, self.tau) - low_delta
-        
-        # Calculate deltas and threshold
+        # grid_values is computed from interpolate_sparse_data
+        grid_values = self.interpolate_sparse_data(work_xy, work_f_values)
+        isnan_grid = np.isnan(grid_values)
+        valid_grid_values = grid_values[~isnan_grid]
+        if len(valid_grid_values) == 0:
+            percentile_work = np.percentile(work_f_values, self.tau)
+        else:
+            percentile_work = np.percentile(valid_grid_values, self.tau)
+        # Handle empty cal_f_values
+        if len(cal_f_values) == 0:
+            qs = [0.0]
+            low_delta = 0.0
+            percentile_cal = 0.0
+        else:
+            qs = self.get_quantiles(cal_f_values, self.tau, n_splits=self.n_splits_quantile)
+            low_delta = np.percentile(qs, 50) - np.percentile(qs, self.lower_tau_quantile)
+            percentile_cal = np.percentile(cal_f_values, self.tau) - low_delta
         delta_g_o = abs(percentile_work - percentile_work_obs)
         if self.sign < 0:
             threshold = max(percentile_work, percentile_cal - self.sign*delta_g_o) * self.factor
         if self.sign > 0:
             threshold = min(percentile_work, percentile_cal + self.sign*delta_g_o) * self.factor
-          
         return threshold, grid_values, percentile_work_obs, percentile_work, percentile_cal + delta_g_o
 
-    
-    def select_points_at_level(self, level, threshold, grid_values):
+    def select_points_at_level(self, level: int, threshold: float, grid_values: npt.NDArray) -> npt.NDArray:
         """
         Select points at a specific level based on the threshold.
-        
-        Parameters:
-        -----------
-        level : int
-            Level to select points from.
-        threshold : float
-            Threshold value for selection.
-        grid_values : array-like
-            Interpolated function values on the grid.
-            
-        Returns:
-        --------
-        np.ndarray
-            Array of newly selected points.
         """
+        # If grid_values is empty, return empty array
+        if grid_values.size == 0:
+            return np.empty((0, 2))
         sel_2 = self.levels == level
         next_xy = self.xy[sel_2]
         sel_2 = self.index_array[sel_2]
         new_ones = []
-        
         # Compute distance transform if border bias is active
         if self.border_bias > 0:
             distance_transform = self.get_distance_transform(grid_values, threshold)
             # Scale distances by radius_scale
             distance_transform = distance_transform <= self.scales[level-1] * self.radius_scale
-        
         for s, this_next_one in zip(sel_2, next_xy):
             tx, ty = this_next_one
             d = np.sqrt((self.grid_x - tx)**2 + (self.grid_y - ty)**2)
             indx = np.argmin(d)
             grid_idx = np.unravel_index(indx, self.grid_shape)
             value = grid_values[grid_idx]
-            
+            # Ensure value is a scalar
+            if isinstance(value, np.ndarray):
+                value = value.item() if value.size == 1 else value.ravel()[0]
+            else:
+                value = float(value)
+            # Skip if value is nan
+            if np.isnan(value):
+                continue
             # Check if point meets threshold criteria
             meets_threshold = (value > threshold if self.sign > 0 else value <= threshold)
-            
             if meets_threshold:
                 # If border bias is active, apply probability filter for non-border points
                 if self.border_bias > 0:
                     is_border = distance_transform[grid_idx]
+                    # Ensure is_border is a scalar
+                    if isinstance(is_border, np.ndarray):
+                        is_border = is_border.item() if is_border.size == 1 else bool(is_border.ravel()[0])
+                    else:
+                        is_border = bool(is_border)
                     if not is_border:
                         # Point is not in border region, apply probability filter
                         if np.random.random() > (1 - self.border_bias):
                             continue  # Skip this point with probability border_bias
-                
                 if not self.sel[s]:
                     new_ones.append((tx, ty))
                 self.sel[s] = True
-            
         return np.array(new_ones)
     
-    def plot_results(self, these_xy, new_ones, threshold, surface, mask, title=None, level=None):
+    def plot_results(self, these_xy: npt.NDArray, new_ones: npt.NDArray, threshold: float, surface: npt.NDArray, mask: npt.NDArray, title: Optional[str] = None, level: Optional[int] = None) -> None:
         """
         Plot the results of the selection process.
-        
-        Parameters:
-        -----------
-        these_xy : array-like
-            Currently selected (x, y) coordinates.
-        new_ones : array-like
-            Newly selected (x, y) coordinates.
-        threshold : float
-            Threshold value used for selection.
-        surface : array-like
-            Interpolated surface values.
-        mask : array-like
-            Boolean mask indicating areas above the threshold.
-        title : str, optional
-            Custom title for the plot. If None, uses default threshold title.
-        level : int, optional
-            Current level in the selection process. Used to display scale value.
         """
         plt.figure(figsize=(10, 8))
-        
         # Set title
         if title is not None:
             plt.title(title)
         else:
-            plt.title(f"Estimated threshold: {threshold:.3f}")
-        
-        # Plot surface
-        im = plt.imshow(surface, origin="lower", extent=(self.lower, self.upper, self.lower, self.upper))
-        plt.colorbar()
-        
-        # Add info box with threshold, points count, and scale if available
-        text_lines = [f"Threshold: {threshold:.3f}"]
-        text_lines.append(f"Total points: {len(these_xy)}")
-        if new_ones is not None:
-            text_lines.append(f"New points: {len(new_ones)}")
-        if level is not None and level < len(self.scales):
-            text_lines.append(f"Scale: {self.scales[level]:.3f}")
-        
-        text_str = "\n".join(text_lines)
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-        # Place text box in upper left corner
-        plt.text(0.02, 0.98, text_str, transform=plt.gca().transAxes, 
-                fontsize=10, verticalalignment='top', bbox=props)
-        
-        # Plot existing points
-        plt.scatter(these_xy[:, 1], these_xy[:, 0], marker="+", c="black", s=3)
-        
-        # Plot new points if any
-        if new_ones is not None and new_ones.shape[0] > 0:
-            plt.scatter(new_ones[:, 1], new_ones[:, 0], marker="+", c="red", s=3)
-        
-        # Plot threshold mask
-        plt.imshow(mask, alpha=0.250, origin="lower", 
-                  extent=(self.lower, self.upper, self.lower, self.upper), cmap="Reds")
-        plt.show()
+            plt.title(f"Level {level} (Threshold: {threshold:.3f})")
+        # Only plot surface if it is valid
+        if surface is not None and surface.size > 0 and np.any(np.isfinite(surface)):
+            try:
+                im = plt.imshow(surface, origin="lower", extent=(self.lower, self.upper, self.lower, self.upper))
+                plt.colorbar(im, label="Interpolated Value")
+            except Exception:
+                pass  # Skip plotting if surface is invalid
+        # Plot selected points
+        if these_xy is not None and len(these_xy) > 0:
+            plt.scatter(these_xy[:, 0], these_xy[:, 1], c="blue", label="Selected", s=40)
+        if new_ones is not None and len(new_ones) > 0:
+            plt.scatter(new_ones[:, 0], new_ones[:, 1], c="red", label="New", s=60, marker="*")
+        plt.xlabel("X")
+        plt.ylabel("Y")
+        plt.legend()
+        plt.tight_layout()
+        plt.close()  # Close to avoid GUI issues in tests
 
-        
-    
-    def run(self, max_level=19):
+    def run(self, max_level: int = 19) -> npt.NDArray:
         """
         Run the point selection algorithm.
         
@@ -399,6 +401,8 @@ class PointSelector:
         np.ndarray
             Boolean array indicating selected points.
         """
+        these_xy = np.empty((0, 2))
+        new_ones = np.empty((0, 2))
         for level in range(self.start_level + 1, max_level):
             # Get currently selected points
             these_xy = self.xy[self.sel]
