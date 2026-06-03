@@ -8,6 +8,18 @@ import tempfile
 import os
 
 
+@pytest.fixture(autouse=True)
+def _seed_rng():
+    """Seed NumPy's global RNG before every test for deterministic results.
+
+    Much of the library relies on ``np.random`` (Poisson sampling, tiling,
+    calibration splits). Seeding here makes the suite reproducible and removes
+    flakiness from tests that assert on point counts or distances.
+    """
+    np.random.seed(1234)
+    yield
+
+
 @pytest.fixture
 def sample_2d_domain():
     """Fixture for a 2D domain."""

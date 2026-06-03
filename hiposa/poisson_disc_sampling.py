@@ -1,9 +1,12 @@
+import logging
 import numpy as np
 from scipy.spatial import KDTree
 from scipy.optimize import minimize
 from typing import List, Tuple, Optional, Callable, Union, Any
 import numpy.typing as npt
 import numbers
+
+logger = logging.getLogger(__name__)
 
 # Optional config integration
 try:
@@ -83,15 +86,27 @@ class PoissonDiskSamplerWithExisting:
 
         if existing_points is not None:
             self.samples = existing_points.tolist()
-            self.idx_to_point = {i: pt for i, pt in enumerate(existing_points)}
             self.kdtree = KDTree(existing_points)
+            self._indexed_count = len(existing_points)
             self.labels = existing_labels if existing_labels is not None else np.array(
                 ["existing"] * len(existing_points))
         else:
             self.samples = []
-            self.idx_to_point = {}
             self.kdtree = None
+            self._indexed_count = 0
             self.labels = np.array([])
+
+    def _rebuild_kdtree(self) -> None:
+        """Rebuild the KDTree so it indexes all current samples.
+
+        The KDTree is used to accelerate non-periodic validity checks. It is an
+        immutable structure, so it is rebuilt in bulk rather than updated
+        incrementally; any samples added after the last rebuild are tracked via
+        ``self._indexed_count`` and checked separately in :meth:`is_valid_point`.
+        """
+        if len(self.samples) > 0:
+            self.kdtree = KDTree(np.asarray(self.samples))
+            self._indexed_count = len(self.samples)
 
     def generate_points_around(self, point: np.ndarray) -> np.ndarray:
         """
@@ -126,37 +141,54 @@ class PoissonDiskSamplerWithExisting:
 
     def is_valid_point(self, point: np.ndarray) -> bool:
         """
-        Optimized version of point validation.
-        
+        Validate a candidate point against the domain bounds and existing samples.
+
+        For non-periodic domains this queries the KDTree (O(log n)) plus a small
+        set of samples added since the last rebuild. For periodic domains
+        (``wrap=True``) it falls back to a vectorized wrap-around distance check,
+        since KDTree's box-periodicity assumptions do not match arbitrary domain
+        bounds.
+
         Args:
             point: The point to validate.
-            
+
         Returns:
             True if the point is valid, False otherwise.
         """
+        point = np.asarray(point)
+
         # Check domain bounds
         if np.any(point < self.domain[:, 0]) or np.any(point >= self.domain[:, 1]):
             return False
 
         # If no existing points, any point within bounds is valid
-        if len(self.samples) == 0:
+        n_samples = len(self.samples)
+        if n_samples == 0:
             return True
 
-        # Get all points to check against
-        points = np.array(self.samples)
-        
-        # Calculate distances
         if self.wrap:
-            # Vectorized wrap-around distance calculation
+            # Vectorized wrap-around distance calculation (brute-force fallback).
+            points = np.asarray(self.samples)
             diff = np.abs(point - points)
             domain_size = self.domain[:, 1] - self.domain[:, 0]
             wrapped_diff = np.minimum(diff, domain_size - diff)
             distances = np.sqrt(np.sum(wrapped_diff ** 2, axis=1))
-        else:
-            distances = np.sqrt(np.sum((point - points) ** 2, axis=1))
-        
-        # Check if any point is too close
-        return not np.any(distances < self.r)
+            return not np.any(distances < self.r)
+
+        # Non-periodic: use the KDTree for the indexed prefix of samples.
+        if self.kdtree is not None:
+            dist, _ = self.kdtree.query(point, k=1)
+            if dist < self.r:
+                return False
+
+        # Check any samples added since the last KDTree rebuild.
+        if self._indexed_count < n_samples:
+            pending = np.asarray(self.samples[self._indexed_count:])
+            distances = np.sqrt(np.sum((point - pending) ** 2, axis=1))
+            if np.any(distances < self.r):
+                return False
+
+        return True
 
     def check_orbit_validity(self, orbit: List[np.ndarray], epsilon: float = 1e-10) -> bool:
         """
@@ -322,8 +354,7 @@ class PoissonDiskSamplerWithExisting:
         if new_label is None:
             new_label = 0
             if len(self.labels) > 0:
-                # Debug: print type and contents of self.labels
-                print('DEBUG: self.labels type:', type(self.labels), 'contents:', self.labels)
+                logger.debug("self.labels type: %s contents: %s", type(self.labels), self.labels)
                 try:
                     numeric_labels = []
                     for label in self.labels:
@@ -336,7 +367,7 @@ class PoissonDiskSamplerWithExisting:
                     new_label = max(numeric_labels) + 1
                 except (ValueError, TypeError):
                     new_label = len(self.labels)
-            print('DEBUG: Computed new_label =', new_label)
+            logger.debug("Computed new_label = %s", new_label)
 
         if not self.samples:
             # First try to add invariant points
@@ -345,7 +376,6 @@ class PoissonDiskSamplerWithExisting:
                 for point in invariant_points:
                     if self.is_valid_point(point):
                         self.samples.append(point)
-                        self.idx_to_point[len(self.samples)-1] = point
                         self.labels = np.append(self.labels, 
                             new_label if new_label is not None else "new")
             
@@ -358,8 +388,6 @@ class PoissonDiskSamplerWithExisting:
                     symmetric_points = self.apply_symmetry(initial_point)
                     if symmetric_points is not None:
                         self.samples.extend(symmetric_points)
-                        for idx, point in enumerate(symmetric_points):
-                            self.idx_to_point[idx] = point
                         self.labels = np.concatenate((self.labels, np.array(
                             [new_label if new_label is not None else "new"] * len(
                                 symmetric_points))))
@@ -395,7 +423,6 @@ class PoissonDiskSamplerWithExisting:
                         for sym_point in symmetric_points:
                             self.samples.append(sym_point)
                             new_index = len(self.samples) - 1
-                            self.idx_to_point[new_index] = sym_point
                             label = new_label if new_label is not None else "new"
                             self.labels = np.append(self.labels, label)
                             active_list.append(new_index)
@@ -409,7 +436,7 @@ class PoissonDiskSamplerWithExisting:
 
             points_since_update += 1
             if points_since_update >= update_frequency:
-                self.kdtree = KDTree(np.array(self.samples))
+                self._rebuild_kdtree()
                 points_since_update = 0
 
         # Second pass with increased k
@@ -437,7 +464,6 @@ class PoissonDiskSamplerWithExisting:
                         for sym_point in symmetric_points:
                             self.samples.append(sym_point)
                             new_index = len(self.samples) - 1
-                            self.idx_to_point[new_index] = sym_point
                             label = new_label if new_label is not None else "new"
                             self.labels = np.append(self.labels, label)
                             active_list.append(new_index)
@@ -451,14 +477,13 @@ class PoissonDiskSamplerWithExisting:
 
             points_since_update += 1
             if points_since_update >= update_frequency:
-                self.kdtree = KDTree(np.array(self.samples))
+                self._rebuild_kdtree()
                 points_since_update = 0
 
         # Restore original k
         self.k = original_k
 
-        # After all label assignments, print the labels array for debugging
-        print('DEBUG: Final labels array =', self.labels)
+        logger.debug("Final labels array = %s", self.labels)
         if return_new_only:
             return np.array(new_points), np.array(new_labels)
         else:

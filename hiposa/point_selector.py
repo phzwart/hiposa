@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import CloughTocher2DInterpolator
@@ -6,6 +7,8 @@ import scipy.ndimage as ndi
 from sklearn.model_selection import KFold
 from typing import List, Tuple, Optional, Union, Any, Callable
 import numpy.typing as npt
+
+logger = logging.getLogger(__name__)
 
 # Optional config integration
 try:
@@ -357,6 +360,9 @@ class PointSelector:
                 if not self.sel[s]:
                     new_ones.append((tx, ty))
                 self.sel[s] = True
+        # Always return a consistently-shaped (N, 2) array, even when empty.
+        if not new_ones:
+            return np.empty((0, 2))
         return np.array(new_ones)
     
     def plot_results(self, these_xy: npt.NDArray, new_ones: npt.NDArray, threshold: float, surface: npt.NDArray, mask: npt.NDArray, title: Optional[str] = None, level: Optional[int] = None) -> None:
@@ -433,13 +439,14 @@ class PointSelector:
             # Select points at current level
             tl = min(level, len(self.scales)-1)
             new_ones = self.select_points_at_level(level, threshold, grid_values) #, distance_map, self.scales[tl-1]*4 )
-            print(len(new_ones))
-            
-            # Print statistics
-            print(f"Level {level}:")
-            print(f"  Percentiles: work_obs={p_work_obs:.3f}, work={p_work:.3f}, cal+delta={p_cal_delta:.3f}")
-            print(f"  Threshold: {threshold:.3f}")
-            print(f"  New points: {new_ones.shape[0]}")
+
+            logger.info("Level %s:", level)
+            logger.info(
+                "  Percentiles: work_obs=%.3f, work=%.3f, cal+delta=%.3f",
+                p_work_obs, p_work, p_cal_delta,
+            )
+            logger.info("  Threshold: %.3f", threshold)
+            logger.info("  New points: %s", new_ones.shape[0])
             
             # Plot results
             mask = surface > threshold

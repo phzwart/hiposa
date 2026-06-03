@@ -1,9 +1,12 @@
+import logging
 import numpy as np
 from .poisson_disc_sampling import PoissonDiskSamplerWithExisting
 from multiprocessing import Pool
 from functools import partial
 import itertools
 from typing import List, Tuple, Optional, Union, Any
+
+logger = logging.getLogger(__name__)
 
 class PoissonTiler:
     """
@@ -32,25 +35,25 @@ class PoissonTiler:
         self.tile_points = None
         self.tile_labels = None
         
-        print(f"\nInitializing PoissonTiler:")
-        print(f"Requested tile size: {tile_size}")
-        print(f"Actual tile size: {self.tile_size} (minimum required: {min_tile_size})")
-        print(f"Spacings: {spacings}")
-        print(f"Dimensions: {dimensions}")
-        print(f"Tile domain: {self.tile_domain}")
+        logger.info("Initializing PoissonTiler:")
+        logger.info("Requested tile size: %s", tile_size)
+        logger.info("Actual tile size: %s (minimum required: %s)", self.tile_size, min_tile_size)
+        logger.info("Spacings: %s", spacings)
+        logger.info("Dimensions: %s", dimensions)
+        logger.info("Tile domain: %s", self.tile_domain)
         
         # Generate the base tile
         self._generate_base_tile()
 
     def _generate_base_tile(self) -> None:
         """Generate hierarchical sampling within a single periodic tile."""
-        print("\nGenerating base tile...")
+        logger.info("Generating base tile...")
         points = None
         labels = None
         
         # Generate points for each spacing level
         for level, spacing in enumerate(self.spacings):
-            print(f"\nGenerating level {level} with spacing {spacing}")
+            logger.info("Generating level %s with spacing %s", level, spacing)
             sampler = PoissonDiskSamplerWithExisting(
                 domain=self.tile_domain,
                 r=spacing,
@@ -69,11 +72,11 @@ class PoissonTiler:
                 points = np.vstack((points, new_points))
                 labels = np.concatenate((labels, new_labels))
             
-            print(f"Level {level}: Generated {len(new_points)} points")
+            logger.info("Level %s: Generated %s points", level, len(new_points))
         
         self.tile_points = points
         self.tile_labels = labels.astype(np.int32)  # Ensure all labels are integers
-        print(f"\nBase tile complete with {len(points)} total points")
+        logger.info("Base tile complete with %s total points", len(points))
 
     def _process_tile(self, args: Tuple) -> Tuple[np.ndarray, np.ndarray]:
         """

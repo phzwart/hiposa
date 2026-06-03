@@ -53,7 +53,6 @@ def test_kdtree_validation():
     for point in additional_points:
         if sampler.is_valid_point(point):
             sampler.samples.append(point)
-            sampler.idx_to_point[len(sampler.samples)-1] = point
             sampler.labels = np.append(sampler.labels, "new")
     
     # Convert samples to numpy array and rebuild KDTree
